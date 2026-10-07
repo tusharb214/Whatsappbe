@@ -1,0 +1,46 @@
+spring:
+  application:
+    name: whatsappbe
+
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+
+
+whatsapp:
+  meta:
+    graph-api-url: https://graph.facebook.com
+    graph-api-version: ${META_GRAPH_API_VERSION:v23.0}
+
+    app-id: ${META_APP_ID}
+    app-secret: ${META_APP_SECRET}
+
+    verify-token: ${META_VERIFY_TOKEN}
+
+    catalog-id: ${META_CATALOG_ID}
+    catalog-access-token: ${META_CATALOG_ACCESS_TOKEN}
+
+    waba-id: ${META_WABA_ID}
+    product-base-url: ${PRODUCT_BASE_URL}
+
+
+app:
+  upload:
+    dir: ${UPLOAD_DIR:uploads}
+
+  public-base-url: ${PUBLIC_BASE_URL}
+
+
+logging:
+  level:
+    org.springframework.security: INFOgit init

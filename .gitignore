@@ -31,3 +31,16 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Local and production secrets
+.env
+.env.*
+!.env.example
+
+# Local configuration containing secrets
+application-local.yaml
+application-prod.yaml
+
+# Build and runtime files
+uploads/
+*.log

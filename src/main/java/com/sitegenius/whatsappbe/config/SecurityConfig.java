@@ -64,13 +64,17 @@ public class SecurityConfig {
                                 "/v3/api-docs/**"
                         ).permitAll()
 
-                        // Login
+
+                        // Public authentication endpoints
                         .requestMatchers(
-                                "/api/auth/login"
+                                "/api/auth/login",
+                                "/api/auth/signup"
                         ).permitAll()
+
                         .requestMatchers(
                                 "/api/webhook/whatsapp"
                         ).permitAll()
+
 
                         // SUPER_ADMIN can create Organization Admin
                         .requestMatchers(

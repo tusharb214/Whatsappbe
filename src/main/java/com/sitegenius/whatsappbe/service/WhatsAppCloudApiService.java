@@ -396,6 +396,63 @@ public class WhatsAppCloudApiService {
     }
 
 
+
+    public JsonNode getConfiguredMetaCatalog() {
+        if (catalogId == null || catalogId.isBlank()) {
+            throw new RuntimeException("Meta Catalog ID is missing");
+        }
+        if (catalogAccessToken == null || catalogAccessToken.isBlank()) {
+            throw new RuntimeException("Meta Catalog access token is missing");
+        }
+
+        String url = graphApiUrl + "/" + graphApiVersion
+                + "/" + catalogId + "?fields=id,name,product_count";
+
+        try {
+            String response = restClient.get()
+                    .uri(url)
+                    .header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + catalogAccessToken)
+                    .retrieve()
+                    .body(String.class);
+
+            return objectMapper.readTree(response);
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Failed to fetch Meta catalog: " + e.getMessage(), e);
+        }
+    }
+
+    public JsonNode getConfiguredMetaCatalogProducts() {
+        if (catalogId == null || catalogId.isBlank()) {
+            throw new RuntimeException("Meta Catalog ID is missing");
+        }
+        if (catalogAccessToken == null || catalogAccessToken.isBlank()) {
+            throw new RuntimeException("Meta Catalog access token is missing");
+        }
+
+        String url = graphApiUrl + "/" + graphApiVersion
+                + "/" + catalogId
+                + "/products?fields=id,retailer_id,name,description,price,currency,image_url,availability&limit=100";
+
+        try {
+            String response = restClient.get()
+                    .uri(url)
+                    .header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + catalogAccessToken)
+                    .retrieve()
+                    .body(String.class);
+
+            return objectMapper.readTree(response);
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Failed to fetch Meta catalog products: "
+                            + e.getMessage(), e);
+        }
+    }
+
+
+
     // =========================================================
 // SEND IMAGE MESSAGE
 // =========================================================

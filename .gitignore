@@ -44,3 +44,6 @@ application-prod.yaml
 # Build and runtime files
 uploads/
 *.log
+*.bak*
+SELECT
+UPDATE

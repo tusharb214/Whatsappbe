@@ -63,19 +63,33 @@ public class FlowExecutionService {
             return;
         }
 
+        List<Long> publishedFlowIds = flowRepository
+                .findByOrganizationIdAndStatus(
+                        organizationId,
+                        Flow.FlowStatus.PUBLISHED
+                )
+                .stream()
+                .map(Flow::getId)
+                .toList();
+
+        if (publishedFlowIds.isEmpty()) {
+            return;
+        }
+
         List<FlowNode> allNodes =
-                flowNodeRepository.findAll();
+                flowNodeRepository.findByFlowIdInAndNodeTypeInOrderByIdAsc(
+                        publishedFlowIds,
+                        List.of(
+                                FlowNode.NodeType.KEYWORD_TRIGGER,
+                                FlowNode.NodeType.MESSAGE_TRIGGER
+                        )
+                );
 
         if (allNodes.isEmpty()) {
             return;
         }
 
         for (FlowNode triggerNode : allNodes) {
-
-            if (triggerNode.getNodeType() != FlowNode.NodeType.KEYWORD_TRIGGER &&
-                    triggerNode.getNodeType() != FlowNode.NodeType.MESSAGE_TRIGGER) {
-                continue;
-            }
 
             Flow flow = findPublishedFlow(
                     triggerNode.getFlowId(),
@@ -587,6 +601,11 @@ public class FlowExecutionService {
          *   ]
          * }
          */
+        if (node.getNodeType() == FlowNode.NodeType.IMAGE) {
+            sendImageNode(node, organizationId, customerPhoneNumber);
+            return;
+        }
+
         if (node.getNodeType() == FlowNode.NodeType.LIST) {
             sendListMessage(node, organizationId, customerPhoneNumber);
             return;
@@ -609,6 +628,29 @@ public class FlowExecutionService {
     /**
      * Sends a configured WhatsApp interactive list.
      */
+
+    private void sendImageNode(
+            FlowNode node,
+            Long organizationId,
+            String customerPhoneNumber) {
+        try {
+            JsonNode config = objectMapper.readTree(node.getConfig());
+            String mediaUrl = config.path("mediaUrl").asText("");
+            String caption = config.path("caption").asText("");
+
+            if (mediaUrl.isBlank()) {
+                System.err.println("IMAGE node has no mediaUrl. Node ID = " + node.getId());
+                return;
+            }
+
+            whatsAppCloudApiService.sendImageUrlMessage(
+                    organizationId, customerPhoneNumber, mediaUrl, caption);
+        } catch (Exception exception) {
+            System.err.println("Flow IMAGE node execution failed: "
+                    + exception.getMessage());
+        }
+    }
+
     private void sendListMessage(
             FlowNode node,
             Long organizationId,

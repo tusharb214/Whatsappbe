@@ -400,6 +400,62 @@ public class WhatsAppCloudApiService {
 // SEND IMAGE MESSAGE
 // =========================================================
 
+
+    public String sendImageUrlMessage(
+            Long organizationId,
+            String customerPhoneNumber,
+            String mediaUrl,
+            String caption) {
+        if (organizationId == null) {
+            throw new RuntimeException("Organization is required");
+        }
+        if (customerPhoneNumber == null || customerPhoneNumber.isBlank()) {
+            throw new RuntimeException("Customer phone number is required");
+        }
+        if (mediaUrl == null || !mediaUrl.trim().matches("(?i)^https://.+")) {
+            throw new RuntimeException("A public HTTPS image URL is required");
+        }
+
+        WhatsAppNumber number = whatsAppNumberRepository
+                .findFirstByOrganizationIdAndStatus(organizationId, "ACTIVE")
+                .orElseThrow(() -> new RuntimeException("No active WhatsApp number found"));
+        validateWhatsAppCredentials(number);
+
+        String url = graphApiUrl + "/" + graphApiVersion + "/"
+                + number.getPhoneNumberId() + "/messages";
+
+        Map<String, Object> image = new HashMap<>();
+        image.put("link", mediaUrl.trim());
+        if (caption != null && !caption.isBlank()) {
+            image.put("caption", caption);
+        }
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("messaging_product", "whatsapp");
+        body.put("recipient_type", "individual");
+        body.put("to", normalizePhoneNumber(customerPhoneNumber));
+        body.put("type", "image");
+        body.put("image", image);
+
+        try {
+            String response = restClient.post()
+                    .uri(url)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + number.getAccessToken())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body)
+                    .retrieve()
+                    .body(String.class);
+            String messageId = extractWhatsAppMessageId(response);
+            if (messageId == null || messageId.isBlank()) {
+                throw new RuntimeException("Meta did not return a WhatsApp message ID");
+            }
+            return messageId;
+        } catch (Exception exception) {
+            throw new RuntimeException("Failed to send WhatsApp image URL: "
+                    + exception.getMessage(), exception);
+        }
+    }
+
     public String sendImageMessage(
             Long organizationId,
             String customerPhoneNumber,

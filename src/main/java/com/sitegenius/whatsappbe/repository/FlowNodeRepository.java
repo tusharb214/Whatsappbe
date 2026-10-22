@@ -3,6 +3,7 @@ package com.sitegenius.whatsappbe.repository;
 import com.sitegenius.whatsappbe.entity.FlowNode;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -23,6 +24,11 @@ public interface FlowNodeRepository extends JpaRepository<FlowNode, Long> {
     boolean existsByFlowIdAndNodeKey(
             Long flowId,
             String nodeKey
+    );
+
+    List<FlowNode> findByFlowIdInAndNodeTypeInOrderByIdAsc(
+            Collection<Long> flowIds,
+            Collection<FlowNode.NodeType> nodeTypes
     );
 
     void deleteByFlowId(Long flowId);

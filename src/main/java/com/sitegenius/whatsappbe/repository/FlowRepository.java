@@ -15,6 +15,11 @@ public interface FlowRepository extends JpaRepository<Flow, Long> {
             Long organizationId
     );
 
+    List<Flow> findByOrganizationIdAndStatus(
+            Long organizationId,
+            Flow.FlowStatus status
+    );
+
     boolean existsByNameAndOrganizationId(
             String name,
             Long organizationId

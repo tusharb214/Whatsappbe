@@ -5,8 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sitegenius.whatsappbe.entity.Flow;
 import com.sitegenius.whatsappbe.entity.FlowEdge;
 import com.sitegenius.whatsappbe.entity.FlowNode;
+import com.sitegenius.whatsappbe.entity.FlowExecutionSession;
 import com.sitegenius.whatsappbe.repository.FlowEdgeRepository;
 import com.sitegenius.whatsappbe.repository.FlowNodeRepository;
+import com.sitegenius.whatsappbe.repository.FlowExecutionSessionRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,6 +22,7 @@ import java.util.Set;
 public class FlowExecutionService {
 
     private final FlowNodeRepository flowNodeRepository;
+    private final FlowExecutionSessionRepository flowExecutionSessionRepository;
     private final FlowEdgeRepository flowEdgeRepository;
     private final FlowRepository flowRepository;
     private final WhatsAppCloudApiService whatsAppCloudApiService;
@@ -47,6 +50,16 @@ public class FlowExecutionService {
 
         if (customerPhoneNumber == null ||
                 customerPhoneNumber.isBlank()) {
+            return;
+        }
+
+        // Route a customer's LIST selection before checking normal triggers.
+        if (routeListSelection(
+                organizationId,
+                customerPhoneNumber,
+                messageText,
+                messageType
+        )) {
             return;
         }
 
@@ -135,6 +148,108 @@ public class FlowExecutionService {
              */
             return;
         }
+    }
+
+
+    /**
+     * Routes an interactive LIST selection to the edge whose sourceHandle
+     * matches the selected option ID.
+     */
+    private boolean routeListSelection(
+            Long organizationId,
+            String customerPhoneNumber,
+            String selectedOptionId,
+            String messageType
+    ) {
+        if (!"interactive".equalsIgnoreCase(messageType)
+                || selectedOptionId == null
+                || selectedOptionId.isBlank()) {
+            return false;
+        }
+
+        FlowExecutionSession session = flowExecutionSessionRepository
+                .findByOrganizationIdAndCustomerPhoneNumber(
+                        organizationId,
+                        customerPhoneNumber
+                )
+                .orElse(null);
+
+        if (session == null || session.getPendingNodeId() == null) {
+            return false;
+        }
+
+        Flow flow = findPublishedFlow(session.getFlowId(), organizationId);
+        if (flow == null) {
+            session.setPendingNodeId(null);
+            flowExecutionSessionRepository.save(session);
+            return false;
+        }
+
+        FlowNode listNode = flowNodeRepository
+                .findByIdAndFlowId(session.getPendingNodeId(), flow.getId())
+                .orElse(null);
+
+        if (listNode == null || listNode.getNodeType() != FlowNode.NodeType.LIST) {
+            session.setPendingNodeId(null);
+            flowExecutionSessionRepository.save(session);
+            return false;
+        }
+
+        boolean optionExists = false;
+        try {
+            JsonNode options = objectMapper
+                    .readTree(listNode.getConfig())
+                    .path("options");
+
+            if (options.isArray()) {
+                for (JsonNode option : options) {
+                    if (selectedOptionId.equals(option.path("id").asText())) {
+                        optionExists = true;
+                        break;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Could not read LIST options: " + e.getMessage());
+            return true;
+        }
+
+        if (!optionExists) {
+            return true;
+        }
+
+        boolean matchingEdgeExists = flowEdgeRepository
+                .findBySourceNodeId(listNode.getId())
+                .stream()
+                .anyMatch(edge ->
+                        selectedOptionId.equals(edge.getSourceHandle())
+                        && flowNodeRepository.findByIdAndFlowId(
+                                edge.getTargetNodeId(), flow.getId()
+                        ).isPresent()
+                );
+
+        if (!matchingEdgeExists) {
+            System.out.println(
+                    "No connected edge for LIST option ID: " + selectedOptionId
+            );
+            return true;
+        }
+
+        // Consume the pending selection before executing its branch.
+        session.setPendingNodeId(null);
+        flowExecutionSessionRepository.save(session);
+
+        executeFromNode(
+                flow,
+                listNode,
+                organizationId,
+                customerPhoneNumber,
+                selectedOptionId,
+                messageType,
+                new HashSet<>()
+        );
+
+        return true;
     }
 
     /**
@@ -335,6 +450,14 @@ public class FlowExecutionService {
                                 currentNode.getId()
                         );
 
+        if (currentNode.getNodeType() == FlowNode.NodeType.LIST
+                && messageText != null
+                && !messageText.isBlank()) {
+            outgoingEdges = outgoingEdges.stream()
+                    .filter(edge -> messageText.equals(edge.getSourceHandle()))
+                    .toList();
+        }
+
         if (outgoingEdges.isEmpty()) {
 
             System.out.println(
@@ -359,6 +482,36 @@ public class FlowExecutionService {
                 continue;
             }
 
+            /*
+             * Persist the pending LIST node for this organization/customer.
+             */
+            if (nextNode.getNodeType() == FlowNode.NodeType.LIST) {
+                FlowExecutionSession session = flowExecutionSessionRepository
+                        .findByOrganizationIdAndCustomerPhoneNumber(
+                                organizationId,
+                                customerPhoneNumber
+                        )
+                        .orElseGet(FlowExecutionSession::new);
+
+                session.setOrganizationId(organizationId);
+                session.setCustomerPhoneNumber(customerPhoneNumber);
+                session.setFlowId(flow.getId());
+                session.setPendingNodeId(nextNode.getId());
+                flowExecutionSessionRepository.save(session);
+
+                executeNode(
+                        flow,
+                        nextNode,
+                        organizationId,
+                        customerPhoneNumber,
+                        messageText,
+                        messageType
+                );
+
+                // Wait for the customer's interactive selection.
+                continue;
+            }
+
             executeNode(
                     flow,
                     nextNode,
@@ -369,7 +522,7 @@ public class FlowExecutionService {
             );
 
             /*
-             * Continue through the flow.
+             * Continue through the flow for non-interactive nodes.
              */
             executeFromNode(
                     flow,
@@ -423,6 +576,23 @@ public class FlowExecutionService {
         }
 
         /*
+         * Dynamic WhatsApp LIST node support.
+         * Config format:
+         * {
+         *   "text": "Choose an option",
+         *   "buttonText": "View options",
+         *   "sectionTitle": "Menu",
+         *   "options": [
+         *     {"id": "meal", "title": "Order Today's Meal", "description": "Order today"}
+         *   ]
+         * }
+         */
+        if (node.getNodeType() == FlowNode.NodeType.LIST) {
+            sendListMessage(node, organizationId, customerPhoneNumber);
+            return;
+        }
+
+        /*
          * Other node types will be implemented
          * after the basic trigger → message flow
          * is working.
@@ -432,6 +602,79 @@ public class FlowExecutionService {
 
             System.out.println(
                     "=== FLOW END NODE REACHED ==="
+            );
+        }
+    }
+
+    /**
+     * Sends a configured WhatsApp interactive list.
+     */
+    private void sendListMessage(
+            FlowNode node,
+            Long organizationId,
+            String customerPhoneNumber
+    ) {
+        try {
+            JsonNode config = objectMapper.readTree(node.getConfig());
+
+            String message = config.path("text").asText(
+                    config.path("message").asText("Please select an option")
+            );
+            String buttonText = config.path("buttonText").asText("View options");
+            String sectionTitle = config.path("sectionTitle").asText("Options");
+
+            JsonNode options = config.path("options");
+            if (!options.isArray() || options.isEmpty()) {
+                System.err.println(
+                        "LIST node has no options configured. Node ID = " + node.getId()
+                );
+                return;
+            }
+
+            List<java.util.Map<String, String>> rows = new java.util.ArrayList<>();
+
+            for (JsonNode option : options) {
+                String id = option.path("id").asText("");
+                String title = option.path("title").asText(
+                        option.path("text").asText("")
+                );
+                String description = option.path("description").asText("");
+
+                if (id.isBlank() || title.isBlank()) {
+                    System.err.println(
+                            "Skipping LIST option without id/title. Node ID = " + node.getId()
+                    );
+                    continue;
+                }
+
+                java.util.Map<String, String> row = new java.util.HashMap<>();
+                row.put("id", id);
+                row.put("title", title);
+                if (!description.isBlank()) {
+                    row.put("description", description);
+                }
+                rows.add(row);
+            }
+
+            if (rows.isEmpty()) {
+                System.err.println(
+                        "LIST node has no valid options. Node ID = " + node.getId()
+                );
+                return;
+            }
+
+            whatsAppCloudApiService.sendListMessage(
+                    organizationId,
+                    customerPhoneNumber,
+                    message,
+                    buttonText,
+                    sectionTitle,
+                    rows
+            );
+
+        } catch (Exception exception) {
+            System.err.println(
+                    "Flow LIST node execution failed: " + exception.getMessage()
             );
         }
     }
@@ -458,24 +701,24 @@ public class FlowExecutionService {
                             node.getConfig()
                     );
 
-            JsonNode textNode =
-                    config.get("text");
+            JsonNode textNode = config.get("text");
 
-            if (textNode == null) {
+            if (textNode == null || textNode.isNull()
+                    || textNode.asText().isBlank()) {
+                textNode = config.get("message");
+            }
 
+            if (textNode == null || textNode.isNull()) {
                 System.err.println(
-                        "Text message node has no text. Node ID = "
+                        "Text message node has no text/message. Node ID = "
                                 + node.getId()
                 );
-
                 return;
             }
 
-            String text =
-                    textNode.asText();
+            String text = textNode.asText();
 
-            if (text == null ||
-                    text.isBlank()) {
+            if (text.isBlank()) {
                 return;
             }
 

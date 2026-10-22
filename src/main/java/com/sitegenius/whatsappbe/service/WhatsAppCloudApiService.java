@@ -15,7 +15,9 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 
 import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.Map;
+import java.util.List;
 
 @Service
 public class WhatsAppCloudApiService {
@@ -1136,6 +1138,118 @@ public class WhatsAppCloudApiService {
     // =========================================================
 // SEND WHATSAPP FLOW MESSAGE
 // =========================================================
+
+    public String sendListMessage(
+            Long organizationId,
+            String customerPhoneNumber,
+            String message,
+            String buttonText,
+            String sectionTitle,
+            List<Map<String, String>> rows
+    ) {
+        if (rows == null || rows.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "WhatsApp list must contain at least one row"
+            );
+        }
+
+        if (rows.size() > 10) {
+            throw new IllegalArgumentException(
+                    "WhatsApp interactive list supports at most 10 rows"
+            );
+        }
+
+        var whatsAppNumber = whatsAppNumberRepository
+                .findFirstByOrganizationIdAndStatus(
+                        organizationId,
+                        "ACTIVE"
+                )
+                .orElseThrow(() -> new RuntimeException(
+                        "No active WhatsApp number found"
+                ));
+
+        validateWhatsAppCredentials(whatsAppNumber);
+
+        String url = graphApiUrl
+                + "/"
+                + graphApiVersion
+                + "/"
+                + whatsAppNumber.getPhoneNumberId()
+                + "/messages";
+
+        List<Map<String, Object>> formattedRows = new ArrayList<>();
+
+        for (Map<String, String> row : rows) {
+            String id = row.get("id");
+            String title = row.get("title");
+            String description = row.get("description");
+
+            if (id == null || id.isBlank()
+                    || title == null || title.isBlank()) {
+                throw new IllegalArgumentException(
+                        "Every list row requires an id and title"
+                );
+            }
+
+            Map<String, Object> formattedRow = new HashMap<>();
+            formattedRow.put("id", id);
+            formattedRow.put("title", title);
+
+            if (description != null && !description.isBlank()) {
+                formattedRow.put("description", description);
+            }
+
+            formattedRows.add(formattedRow);
+        }
+
+        Map<String, Object> section = new HashMap<>();
+        section.put(
+                "title",
+                sectionTitle == null || sectionTitle.isBlank()
+                        ? "Options"
+                        : sectionTitle
+        );
+        section.put("rows", formattedRows);
+
+        Map<String, Object> action = new HashMap<>();
+        action.put("button", buttonText);
+        action.put("sections", List.of(section));
+
+        Map<String, Object> interactive = new HashMap<>();
+        interactive.put("type", "list");
+        interactive.put("body", Map.of("text", message));
+        interactive.put("action", action);
+
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("messaging_product", "whatsapp");
+        requestBody.put("recipient_type", "individual");
+        requestBody.put(
+                "to",
+                normalizePhoneNumber(customerPhoneNumber)
+        );
+        requestBody.put("type", "interactive");
+        requestBody.put("interactive", interactive);
+
+        try {
+            return restClient
+                    .post()
+                    .uri(url)
+                    .header(
+                            HttpHeaders.AUTHORIZATION,
+                            "Bearer " + whatsAppNumber.getAccessToken()
+                    )
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(requestBody)
+                    .retrieve()
+                    .body(String.class);
+        } catch (Exception exception) {
+            throw new RuntimeException(
+                    "Failed to send WhatsApp list message: "
+                            + exception.getMessage(),
+                    exception
+            );
+        }
+    }
 
     public String sendFlowMessage(
             Long organizationId,

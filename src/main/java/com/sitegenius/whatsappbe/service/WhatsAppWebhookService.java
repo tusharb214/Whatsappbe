@@ -528,21 +528,53 @@ public class WhatsAppWebhookService {
             String messageType) {
 
         if ("text".equalsIgnoreCase(messageType)) {
-
-            String text =
-                    message
-                            .path("text")
-                            .path("body")
-                            .asText(null);
-
+            String text = message.path("text").path("body").asText(null);
             if (text != null) {
                 return text;
             }
         }
 
-        return "["
-                + messageType.toUpperCase()
-                + " MESSAGE]";
+        if ("interactive".equalsIgnoreCase(messageType)) {
+            JsonNode interactive = message.path("interactive");
+
+            String listReplyId = interactive
+                    .path("list_reply")
+                    .path("id")
+                    .asText(null);
+
+            if (listReplyId != null && !listReplyId.isBlank()) {
+                return listReplyId;
+            }
+
+            String listReplyTitle = interactive
+                    .path("list_reply")
+                    .path("title")
+                    .asText(null);
+
+            if (listReplyTitle != null && !listReplyTitle.isBlank()) {
+                return listReplyTitle;
+            }
+
+            String buttonReplyId = interactive
+                    .path("button_reply")
+                    .path("id")
+                    .asText(null);
+
+            if (buttonReplyId != null && !buttonReplyId.isBlank()) {
+                return buttonReplyId;
+            }
+
+            String buttonReplyTitle = interactive
+                    .path("button_reply")
+                    .path("title")
+                    .asText(null);
+
+            if (buttonReplyTitle != null && !buttonReplyTitle.isBlank()) {
+                return buttonReplyTitle;
+            }
+        }
+
+        return "[" + messageType.toUpperCase() + " MESSAGE]";
     }
 
     // =========================================================

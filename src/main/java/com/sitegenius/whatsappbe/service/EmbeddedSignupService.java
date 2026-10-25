@@ -1,3 +1,4 @@
+
 package com.sitegenius.whatsappbe.service;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -6,6 +7,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.util.List;
 import java.util.Map;
 
 @Service
@@ -40,8 +42,7 @@ public class EmbeddedSignupService {
                 .build()
                 .toUriString();
 
-        Map<?, ?> response = restClient
-                .get()
+        Map<?, ?> response = restClient.get()
                 .uri(url)
                 .accept(MediaType.APPLICATION_JSON)
                 .retrieve()
@@ -54,5 +55,56 @@ public class EmbeddedSignupService {
         }
 
         return response.get("access_token").toString();
+    }
+
+    public Map<?, ?> getPhoneDetails(
+            String phoneNumberId,
+            String accessToken
+    ) {
+        String url = UriComponentsBuilder
+                .fromUriString(graphApiUrl)
+                .pathSegment(graphApiVersion, phoneNumberId)
+                .queryParam("fields", "display_phone_number,verified_name")
+                .build()
+                .toUriString();
+
+        return restClient.get()
+                .uri(url)
+                .headers(headers -> headers.setBearerAuth(accessToken))
+                .accept(MediaType.APPLICATION_JSON)
+                .retrieve()
+                .body(Map.class);
+    }
+
+    public boolean wabaContainsPhone(
+            String wabaId,
+            String phoneNumberId,
+            String accessToken
+    ) {
+        String url = UriComponentsBuilder
+                .fromUriString(graphApiUrl)
+                .pathSegment(graphApiVersion, wabaId, "phone_numbers")
+                .queryParam("fields", "id")
+                .build()
+                .toUriString();
+
+        Map<?, ?> response = restClient.get()
+                .uri(url)
+                .headers(headers -> headers.setBearerAuth(accessToken))
+                .accept(MediaType.APPLICATION_JSON)
+                .retrieve()
+                .body(Map.class);
+
+        if (response == null
+                || !(response.get("data") instanceof List<?> data)) {
+            return false;
+        }
+
+        return data.stream().anyMatch(item ->
+                item instanceof Map<?, ?> map
+                        && phoneNumberId.equals(
+                        String.valueOf(map.get("id"))
+                )
+        );
     }
 }

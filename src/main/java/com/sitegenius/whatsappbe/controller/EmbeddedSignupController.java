@@ -6,6 +6,13 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import com.sitegenius.whatsappbe.dto.EmbeddedSignupRequest;
+import com.sitegenius.whatsappbe.entity.WhatsAppNumber;
+import com.sitegenius.whatsappbe.service.WhatsAppNumberService;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/whatsapp/embedded-signup")
@@ -13,8 +20,13 @@ public class EmbeddedSignupController {
 
     private final EmbeddedSignupService embeddedSignupService;
 
-    public EmbeddedSignupController(EmbeddedSignupService embeddedSignupService) {
+    private final WhatsAppNumberService whatsappNumberService;
+
+    public EmbeddedSignupController(
+            EmbeddedSignupService embeddedSignupService,
+            WhatsAppNumberService whatsappNumberService) {
         this.embeddedSignupService = embeddedSignupService;
+        this.whatsappNumberService = whatsappNumberService;
     }
 
     @GetMapping("/callback")
@@ -62,4 +74,80 @@ public class EmbeddedSignupController {
                 </html>
                 """);
     }
+
+
+
+    @PostMapping("/connect")
+    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    public ResponseEntity<?> connect(
+            @RequestBody EmbeddedSignupRequest request) {
+
+        if (request.code() == null || request.code().isBlank()
+                || request.wabaId() == null || request.wabaId().isBlank()
+                || request.phoneNumberId() == null
+                || request.phoneNumberId().isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("message", "Missing signup details"));
+        }
+
+        try {
+            String accessToken =
+                    embeddedSignupService.exchangeCodeForAccessToken(
+                            request.code());
+
+            boolean verified =
+                    embeddedSignupService.wabaContainsPhone(
+                            request.wabaId(),
+                            request.phoneNumberId(),
+                            accessToken);
+
+            if (!verified) {
+                return ResponseEntity.badRequest().body(
+                        Map.of("message",
+                                "Phone number verification failed"));
+            }
+
+            Map<?, ?> details =
+                    embeddedSignupService.getPhoneDetails(
+                            request.phoneNumberId(),
+                            accessToken);
+
+            Object phoneValue = details.get("display_phone_number");
+
+            if (phoneValue == null) {
+                return ResponseEntity.badRequest().body(
+                        Map.of("message",
+                                "Meta did not return the phone number"));
+            }
+
+            String phoneNumber = phoneValue.toString();
+
+            Object nameValue = details.get("verified_name");
+            String displayName = nameValue == null
+                    ? phoneNumber
+                    : nameValue.toString();
+
+            WhatsAppNumber saved =
+                    whatsappNumberService.saveEmbeddedSignupNumber(
+                            phoneNumber,
+                            displayName,
+                            request.phoneNumberId(),
+                            request.wabaId(),
+                            accessToken);
+
+            return ResponseEntity.ok(Map.of(
+                    "id", saved.getId(),
+                    "phoneNumber", saved.getPhoneNumber(),
+                    "displayName", saved.getDisplayName(),
+                    "status", saved.getStatus()
+            ));
+
+        } catch (Exception exception) {
+            // Never log or return access tokens or authorization codes.
+            return ResponseEntity.badRequest().body(
+                    Map.of("message",
+                            "Connection failed. Check Meta configuration and permissions."));
+        }
+    }
+
 }

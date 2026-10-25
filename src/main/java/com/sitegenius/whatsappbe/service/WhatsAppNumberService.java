@@ -8,6 +8,7 @@ import com.sitegenius.whatsappbe.repository.WhatsAppNumberRepository;
 import com.sitegenius.whatsappbe.security.JwtAuthenticationDetails;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -148,6 +149,45 @@ public class WhatsAppNumberService {
 
         return whatsappNumberRepository.save(newNumber);
     }
+
+
+
+    @Transactional
+    public WhatsAppNumber saveEmbeddedSignupNumber(
+            String phoneNumber,
+            String displayName,
+            String phoneNumberId,
+            String wabaId,
+            String accessToken
+    ) {
+        Long organizationId = getCurrentOrganizationId();
+
+        if (organizationId == null) {
+            throw new RuntimeException("Organization is required");
+        }
+
+        Organization organization = organizationRepository
+                .findById(organizationId)
+                .orElseThrow(() ->
+                        new RuntimeException("Organization not found"));
+
+        if (whatsappNumberRepository.existsByPhoneNumber(phoneNumber)) {
+            throw new RuntimeException(
+                    "This phone number is already connected");
+        }
+
+        WhatsAppNumber number = new WhatsAppNumber();
+        number.setOrganization(organization);
+        number.setPhoneNumber(phoneNumber);
+        number.setDisplayName(displayName);
+        number.setPhoneNumberId(phoneNumberId);
+        number.setWabaId(wabaId);
+        number.setAccessToken(accessToken);
+        number.setStatus("ACTIVE");
+
+        return whatsappNumberRepository.save(number);
+    }
+
 
     // Update WhatsApp number
     public WhatsAppNumber updateNumber(

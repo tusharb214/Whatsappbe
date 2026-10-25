@@ -13,6 +13,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import com.sitegenius.whatsappbe.repository.FlowRepository;
+import com.sitegenius.whatsappbe.entity.Product;
+import com.sitegenius.whatsappbe.repository.ProductRepository;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -25,6 +28,7 @@ public class FlowExecutionService {
     private final FlowExecutionSessionRepository flowExecutionSessionRepository;
     private final FlowEdgeRepository flowEdgeRepository;
     private final FlowRepository flowRepository;
+    private final ProductRepository productRepository;
     private final WhatsAppCloudApiService whatsAppCloudApiService;
     private final ObjectMapper objectMapper;
 
@@ -611,6 +615,25 @@ public class FlowExecutionService {
             return;
         }
 
+        if (node.getNodeType() == FlowNode.NodeType.PRODUCT_MENU) {
+            FlowExecutionSession session = flowExecutionSessionRepository
+                    .findByOrganizationIdAndCustomerPhoneNumber(
+                            organizationId,
+                            customerPhoneNumber
+                    )
+                    .orElseGet(() -> {
+                        FlowExecutionSession newSession =
+                                new FlowExecutionSession();
+                        newSession.setOrganizationId(organizationId);
+                        newSession.setCustomerPhoneNumber(customerPhoneNumber);
+                        newSession.setFlowId(flow.getId());
+                        return flowExecutionSessionRepository.save(newSession);
+                    });
+
+            sendProductMenu(node, session);
+            return;
+        }
+
         /*
          * Other node types will be implemented
          * after the basic trigger → message flow
@@ -720,6 +743,90 @@ public class FlowExecutionService {
             );
         }
     }
+
+
+
+    private void sendProductMenu(
+            FlowNode node,
+            FlowExecutionSession session) {
+
+        try {
+            JsonNode config = objectMapper.readTree(
+                    node.getConfig() == null
+                            ? "{}"
+                            : node.getConfig()
+            );
+
+            String selectionMode = config.hasNonNull("selectionMode")
+                    ? config.get("selectionMode").asText()
+                    : "ALL_ACTIVE_CATEGORIES";
+
+            String message = config.hasNonNull("message")
+                    ? config.get("message").asText()
+                    : "Please select your products";
+
+            Long organizationId = session.getOrganizationId();
+
+            List<Product> products =
+                    productRepository
+                            .findByOrganizationIdAndStatusOrderByCreatedAtDesc(
+                                    organizationId, "ACTIVE");
+
+            if ("SELECTED_PRODUCTS".equals(selectionMode)) {
+                Set<Long> selectedIds = new HashSet<>();
+
+                JsonNode ids = config.get("productIds");
+                if (ids != null && ids.isArray()) {
+                    for (JsonNode id : ids) {
+                        if (id.canConvertToLong()) {
+                            selectedIds.add(id.asLong());
+                        }
+                    }
+                }
+
+                products.removeIf(
+                        product -> product.getId() == null
+                                || !selectedIds.contains(product.getId()));
+            }
+
+            else if ("SELECTED_CATEGORIES".equals(selectionMode)) {
+                Set<Long> selectedCategoryIds = new HashSet<>();
+
+                JsonNode ids = config.get("categoryIds");
+                if (ids != null && ids.isArray()) {
+                    for (JsonNode id : ids) {
+                        if (id.canConvertToLong()) {
+                            selectedCategoryIds.add(id.asLong());
+                        }
+                    }
+                }
+
+                products.removeIf(product ->
+                        product.getCategory() == null
+                                || product.getCategory().getId() == null
+                                || !selectedCategoryIds.contains(
+                                product.getCategory().getId()));
+            }
+
+            if (products.isEmpty()) {
+                throw new RuntimeException(
+                        "No active products found for this Product Menu");
+            }
+
+            whatsAppCloudApiService.sendProductListMessage(
+                    organizationId,
+                    session.getCustomerPhoneNumber(),
+                    message,
+                    products
+            );
+
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Failed to execute PRODUCT_MENU node: "
+                            + e.getMessage(), e);
+        }
+    }
+
 
     /**
      * Sends TEXT_MESSAGE / MESSAGE node content.

@@ -1246,6 +1246,128 @@ public class WhatsAppCloudApiService {
         }
     }
 
+    // =========================================================
+    // SEND MULTIPLE PRODUCTS ON WHATSAPP
+    // =========================================================
+
+    public String sendProductListMessage(
+            Long organizationId,
+            String customerPhoneNumber,
+            String message,
+            List<Product> products) {
+
+        if (organizationId == null) {
+            throw new RuntimeException("Organization is required");
+        }
+
+        if (customerPhoneNumber == null
+                || customerPhoneNumber.isBlank()) {
+            throw new RuntimeException("Customer phone number is required");
+        }
+
+        if (catalogId == null || catalogId.isBlank()) {
+            throw new RuntimeException("Meta Catalog ID is missing");
+        }
+
+        if (products == null || products.isEmpty()) {
+            throw new RuntimeException("No products available to send");
+        }
+
+        if (products.size() > 30) {
+            throw new RuntimeException(
+                    "WhatsApp product list supports at most 30 products");
+        }
+
+        List<Map<String, String>> productItems = new ArrayList<>();
+
+        for (Product product : products) {
+            if (product == null
+                    || product.getMetaRetailerId() == null
+                    || product.getMetaRetailerId().isBlank()) {
+                continue;
+            }
+
+            productItems.add(Map.of(
+                    "product_retailer_id",
+                    product.getMetaRetailerId()
+            ));
+        }
+
+        if (productItems.isEmpty()) {
+            throw new RuntimeException(
+                    "No products have a valid Meta Retailer ID");
+        }
+
+        WhatsAppNumber number = whatsAppNumberRepository
+                .findFirstByOrganizationIdAndStatus(
+                        organizationId, "ACTIVE")
+                .orElseThrow(() -> new RuntimeException(
+                        "No active WhatsApp number found"));
+
+        validateWhatsAppCredentials(number);
+
+        String url = graphApiUrl + "/" + graphApiVersion
+                + "/" + number.getPhoneNumberId() + "/messages";
+
+        Map<String, Object> section = new HashMap<>();
+        section.put("title", "Products");
+        section.put("product_items", productItems);
+
+        Map<String, Object> action = new HashMap<>();
+        action.put("catalog_id", catalogId);
+        action.put("sections", List.of(section));
+
+        Map<String, Object> interactive = new HashMap<>();
+        interactive.put("type", "product_list");
+        interactive.put("header", Map.of(
+                "type", "text",
+                "text", "Our Products"
+        ));
+        interactive.put(
+                "body",
+                Map.of("text",
+                        message == null || message.isBlank()
+                                ? "Please select your products"
+                                : message));
+        interactive.put("action", action);
+
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("messaging_product", "whatsapp");
+        requestBody.put("recipient_type", "individual");
+        requestBody.put(
+                "to", normalizePhoneNumber(customerPhoneNumber));
+        requestBody.put("type", "interactive");
+        requestBody.put("interactive", interactive);
+
+        try {
+            String response = restClient.post()
+                    .uri(url)
+                    .header(
+                            HttpHeaders.AUTHORIZATION,
+                            "Bearer " + number.getAccessToken())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(requestBody)
+                    .retrieve()
+                    .body(String.class);
+
+            String messageId = extractWhatsAppMessageId(response);
+
+            if (messageId == null || messageId.isBlank()) {
+                throw new RuntimeException(
+                        "Meta did not return a WhatsApp message ID");
+            }
+
+            return messageId;
+
+        } catch (Exception exception) {
+            throw new RuntimeException(
+                    "Failed to send WhatsApp product list: "
+                            + exception.getMessage(),
+                    exception);
+        }
+    }
+
+
 
 
     // =========================================================

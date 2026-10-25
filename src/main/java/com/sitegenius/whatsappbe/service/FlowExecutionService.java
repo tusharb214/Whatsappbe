@@ -474,7 +474,8 @@ public class FlowExecutionService {
                         );
 
         if ((currentNode.getNodeType() == FlowNode.NodeType.LIST
-                || currentNode.getNodeType() == FlowNode.NodeType.BUTTON)
+                || currentNode.getNodeType() == FlowNode.NodeType.BUTTON
+                || currentNode.getNodeType() == FlowNode.NodeType.PRODUCT_MENU)
                 && messageText != null
                 && !messageText.isBlank()) {
             outgoingEdges = outgoingEdges.stream()
@@ -948,6 +949,7 @@ public class FlowExecutionService {
     private boolean isWaitingNode(FlowNode.NodeType type) {
         return type == FlowNode.NodeType.LIST
                 || type == FlowNode.NodeType.BUTTON
+                || type == FlowNode.NodeType.PRODUCT_MENU
                 || isInputNode(type);
     }
 
@@ -1162,6 +1164,27 @@ public class FlowExecutionService {
 
         FlowNode.NodeType type = node.getNodeType();
         boolean interactive = "interactive".equalsIgnoreCase(messageType);
+
+        if (type == FlowNode.NodeType.PRODUCT_MENU) {
+            // custom cart buttons: ord:x:<buttonId> continue the flow from this node
+            String prefix = "ord:x:";
+            if (!interactive || !messageText.startsWith(prefix)) {
+                return false;
+            }
+            final String handle = messageText.substring(prefix.length());
+            boolean connected = flowEdgeRepository
+                    .findBySourceNodeId(node.getId())
+                    .stream()
+                    .anyMatch(edge -> handle.equals(edge.getSourceHandle()));
+            if (!connected) {
+                whatsAppCloudApiService.sendTextMessage(
+                        organizationId, phone, "This option is not available right now.");
+                return true;
+            }
+            executeFromNode(flow, node, organizationId, phone,
+                    handle, messageType, new HashSet<>());
+            return true;
+        }
 
         if (type == FlowNode.NodeType.LIST) {
             return false;

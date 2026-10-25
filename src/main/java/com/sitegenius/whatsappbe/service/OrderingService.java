@@ -108,6 +108,11 @@ public class OrderingService {
             return false;
         }
 
+        // custom cart buttons (ord:x:...) are handled by the flow engine
+        if (input.startsWith(PREFIX + "x:")) {
+            return false;
+        }
+
         try {
             FlowExecutionSession session = sessionRepository
                     .findByOrganizationIdAndCustomerPhoneNumber(organizationId, phone)
@@ -127,7 +132,7 @@ public class OrderingService {
             switch (action) {
                 case "menu" -> sendCategories(organizationId, phone, config);
                 case "cat" -> sendProducts(organizationId, phone, config, id == null ? 0L : id);
-                case "p" -> sendProductDetail(organizationId, phone, id);
+                case "p" -> sendProductDetail(organizationId, phone, config, id);
                 case "add" -> addToCart(organizationId, phone, session, id);
                 case "checkout" -> sendSummary(organizationId, phone, session, config);
                 case "confirm" -> confirmOrder(organizationId, contact, conversation, phone, session, config);
@@ -202,7 +207,7 @@ public class OrderingService {
         boolean hasImages = products.stream().anyMatch(p ->
                 p.getImageUrl() != null && p.getImageUrl().startsWith("https://"));
         if (hasImages) {
-            sendGallery(orgId, phone, categoryName, products);
+            sendGallery(orgId, phone, config, categoryName, products);
             return;
         }
 
@@ -225,7 +230,7 @@ public class OrderingService {
                 cut(config.path("itemsButton").asText("Items"), 20), cut(categoryName, 24), rows);
     }
 
-    private void sendGallery(Long orgId, String phone, String categoryName, List<Product> products) {
+    private void sendGallery(Long orgId, String phone, JsonNode config, String categoryName, List<Product> products) {
         int sent = 0;
         for (Product p : products) {
             if (sent >= GALLERY_LIMIT) {
@@ -250,7 +255,7 @@ public class OrderingService {
         ));
     }
 
-    private void sendProductDetail(Long orgId, String phone, Long productId) {
+    private void sendProductDetail(Long orgId, String phone, JsonNode config, Long productId) {
         Product p = activeProduct(orgId, productId);
         if (p == null) {
             whatsAppCloudApiService.sendTextMessage(orgId, phone, "This item is not available.");
@@ -326,7 +331,23 @@ public class OrderingService {
                 new String[]{PREFIX + "cancel", "Cancel"}
         );
 
-        sendButtons(orgId, phone, text.toString(), null, buttons);
+        List<Map<String, String>> extras = extraRows(config);
+        if (extras.isEmpty()) {
+            sendButtons(orgId, phone, text.toString(), null, buttons);
+            return;
+        }
+
+        // reply buttons allow only 3, so with extra buttons the cart actions go in a list
+        List<Map<String, String>> rows = new ArrayList<>();
+        for (String[] b : buttons) {
+            Map<String, String> row = new HashMap<>();
+            row.put("id", b[0]);
+            row.put("title", cut(b[1], 24));
+            rows.add(row);
+        }
+        rows.addAll(extras);
+        whatsAppCloudApiService.sendListMessage(
+                orgId, phone, cut(text.toString(), 1024), "Options", "Next step", rows);
     }
 
     private void confirmOrder(
@@ -530,6 +551,30 @@ public class OrderingService {
         String currency = p.getCurrency() == null ? "INR" : p.getCurrency();
         String label = "INR".equalsIgnoreCase(currency) ? "Rs " : currency + " ";
         return label + amount.stripTrailingZeros().toPlainString();
+    }
+
+    private String label(JsonNode config, String key, String fallback) {
+        String value = config == null ? "" : config.path(key).asText("").trim();
+        return cut(value.isBlank() ? fallback : value, 20);
+    }
+
+    private List<Map<String, String>> extraRows(JsonNode config) {
+        List<Map<String, String>> rows = new ArrayList<>();
+        JsonNode array = config == null ? null : config.path("extraButtons");
+        if (array != null && array.isArray()) {
+            for (JsonNode b : array) {
+                String id = b.path("id").asText("");
+                String title = b.path("text").asText("").trim();
+                if (id.isBlank() || title.isBlank() || rows.size() >= 6) {
+                    continue;
+                }
+                Map<String, String> row = new HashMap<>();
+                row.put("id", PREFIX + "x:" + id);
+                row.put("title", cut(title, 24));
+                rows.add(row);
+            }
+        }
+        return rows;
     }
 
     private String cut(String value, int max) {

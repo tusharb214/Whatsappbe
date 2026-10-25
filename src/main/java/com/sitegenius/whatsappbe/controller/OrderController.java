@@ -181,27 +181,35 @@ public class OrderController {
 
     private Long getOrganizationId(Authentication authentication) {
 
-        Object principal = authentication.getPrincipal();
-
-        try {
-            var method = principal.getClass()
-                    .getMethod("getOrganizationId");
-
-            Object value = method.invoke(principal);
-
-            if (value == null) {
-                throw new RuntimeException(
-                        "Organization ID not found"
-                );
-            }
-
-            return Long.valueOf(value.toString());
-
-        } catch (Exception e) {
-            throw new RuntimeException(
-                    "Unable to determine organization ID",
-                    e
-            );
+        if (authentication == null) {
+            throw new RuntimeException("Not authenticated");
         }
+
+        // organizationId comes from the signed JWT (JwtAuthenticationDetails)
+        Object[] sources = {
+                authentication.getDetails(),
+                authentication.getPrincipal()
+        };
+
+        for (Object source : sources) {
+            if (source == null) {
+                continue;
+            }
+            for (java.lang.reflect.Method method : source.getClass().getMethods()) {
+                if (method.getParameterCount() == 0
+                        && method.getName().toLowerCase().contains("organizationid")) {
+                    try {
+                        Object value = method.invoke(source);
+                        if (value != null) {
+                            return Long.valueOf(value.toString());
+                        }
+                    } catch (Exception ignored) {
+                        // try the next source
+                    }
+                }
+            }
+        }
+
+        throw new RuntimeException("Unable to determine organization ID");
     }
 }

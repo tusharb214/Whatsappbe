@@ -124,6 +124,23 @@ public class FlowController {
         return ResponseEntity.noContent().build();
     }
 
+    @PostMapping("/{flowId}/status")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'ADMIN')")
+    public ResponseEntity<FlowResponse> updateFlowStatus(
+            @PathVariable Long flowId,
+            @RequestBody java.util.Map<String, String> body,
+            Authentication authentication
+    ) {
+
+        return ResponseEntity.ok(
+                flowService.updateStatus(
+                        flowId,
+                        body.get("status"),
+                        authentication
+                )
+        );
+    }
+
     // =========================
     // NODES
     // =========================

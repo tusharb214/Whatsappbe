@@ -33,6 +33,15 @@ public class FlowExecutionSession {
     @Column(name = "pending_node_id")
     private Long pendingNodeId;
 
+    @Column(name = "variables_json", columnDefinition = "LONGTEXT")
+    private String variablesJson;
+
+    @Column(name = "cart_json", columnDefinition = "LONGTEXT")
+    private String cartJson;
+
+    @Column(name = "state_json", columnDefinition = "LONGTEXT")
+    private String stateJson;
+
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
@@ -51,5 +60,11 @@ public class FlowExecutionSession {
     public void setFlowId(Long value) { flowId = value; }
     public Long getPendingNodeId() { return pendingNodeId; }
     public void setPendingNodeId(Long value) { pendingNodeId = value; }
+    public String getVariablesJson() { return variablesJson; }
+    public void setVariablesJson(String value) { variablesJson = value; }
+    public String getCartJson() { return cartJson; }
+    public void setCartJson(String value) { cartJson = value; }
+    public String getStateJson() { return stateJson; }
+    public void setStateJson(String value) { stateJson = value; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
 }

@@ -116,6 +116,35 @@ public class FlowService {
         return toResponse(updatedFlow);
     }
 
+    public FlowResponse updateStatus(
+            Long flowId,
+            String status,
+            Authentication authentication
+    ) {
+
+        Long organizationId = getOrganizationId(authentication);
+
+        Flow flow = getOrganizationFlow(flowId, organizationId);
+
+        Flow.FlowStatus newStatus;
+        try {
+            newStatus = Flow.FlowStatus.valueOf(
+                    status == null ? "" : status.trim().toUpperCase()
+            );
+        } catch (IllegalArgumentException e) {
+            throw new RuntimeException("Invalid flow status");
+        }
+
+        if (newStatus != Flow.FlowStatus.DRAFT
+                && newStatus != Flow.FlowStatus.PUBLISHED) {
+            throw new RuntimeException("Only DRAFT or PUBLISHED is allowed");
+        }
+
+        flow.setStatus(newStatus);
+
+        return toResponse(flowRepository.save(flow));
+    }
+
     public void deleteFlow(
             Long flowId,
             Authentication authentication

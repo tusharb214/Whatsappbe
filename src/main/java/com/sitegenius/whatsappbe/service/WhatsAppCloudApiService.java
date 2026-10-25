@@ -1486,6 +1486,74 @@ public class WhatsAppCloudApiService {
         }
     }
 
+    // =========================================================
+    // SEND REPLY BUTTONS (max 3)
+    // =========================================================
+
+    public String sendButtonsMessage(
+            Long organizationId,
+            String customerPhoneNumber,
+            String bodyText,
+            List<String[]> buttons
+    ) {
+        if (buttons == null || buttons.isEmpty() || buttons.size() > 3) {
+            throw new IllegalArgumentException(
+                    "WhatsApp reply buttons need 1 to 3 buttons");
+        }
+        if (bodyText == null || bodyText.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Button message body is required");
+        }
+
+        WhatsAppNumber number = whatsAppNumberRepository
+                .findFirstByOrganizationIdAndStatus(organizationId, "ACTIVE")
+                .orElseThrow(() -> new RuntimeException(
+                        "No active WhatsApp number found"));
+        validateWhatsAppCredentials(number);
+
+        String url = graphApiUrl + "/" + graphApiVersion + "/"
+                + number.getPhoneNumberId() + "/messages";
+
+        List<Map<String, Object>> buttonList = new ArrayList<>();
+        for (String[] b : buttons) {
+            Map<String, String> reply = new HashMap<>();
+            reply.put("id", b[0]);
+            reply.put("title", b[1]);
+            Map<String, Object> button = new HashMap<>();
+            button.put("type", "reply");
+            button.put("reply", reply);
+            buttonList.add(button);
+        }
+
+        Map<String, Object> interactive = new HashMap<>();
+        interactive.put("type", "button");
+        interactive.put("body", Map.of("text",
+                bodyText.length() > 1024 ? bodyText.substring(0, 1024) : bodyText));
+        interactive.put("action", Map.of("buttons", buttonList));
+
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("messaging_product", "whatsapp");
+        requestBody.put("recipient_type", "individual");
+        requestBody.put("to", normalizePhoneNumber(customerPhoneNumber));
+        requestBody.put("type", "interactive");
+        requestBody.put("interactive", interactive);
+
+        try {
+            return restClient.post()
+                    .uri(url)
+                    .header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + number.getAccessToken())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(requestBody)
+                    .retrieve()
+                    .body(String.class);
+        } catch (Exception exception) {
+            throw new RuntimeException(
+                    "Failed to send WhatsApp buttons: " + exception.getMessage(),
+                    exception);
+        }
+    }
+
     public String sendFlowMessage(
             Long organizationId,
             String customerPhoneNumber,

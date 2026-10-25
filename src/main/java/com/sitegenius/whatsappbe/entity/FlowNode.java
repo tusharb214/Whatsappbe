@@ -122,6 +122,8 @@ public class FlowNode {
         REMOVE_TAG,
         CREATE_CONTACT,
         JUMP_TO_FLOW,
-        END
+        END,
+        SAVE_RECORD,
+        PAYMENT_LINK
     }
 }

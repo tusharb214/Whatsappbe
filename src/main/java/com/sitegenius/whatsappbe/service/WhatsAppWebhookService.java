@@ -26,6 +26,7 @@ public class WhatsAppWebhookService {
     private final ConversationRepository conversationRepository;
     private final FlowExecutionService flowExecutionService;
     private final MessageRepository messageRepository;
+    private final OrderingService orderingService;
 
     public WhatsAppWebhookService(
             ObjectMapper objectMapper,
@@ -33,7 +34,8 @@ public class WhatsAppWebhookService {
             ContactRepository contactRepository,
             ConversationRepository conversationRepository,
             FlowExecutionService flowExecutionService,
-            MessageRepository messageRepository) {
+            MessageRepository messageRepository,
+            OrderingService orderingService) {
 
         this.objectMapper = objectMapper;
         this.whatsAppNumberRepository = whatsAppNumberRepository;
@@ -41,6 +43,7 @@ public class WhatsAppWebhookService {
         this.conversationRepository = conversationRepository;
         this.flowExecutionService = flowExecutionService;
         this.messageRepository = messageRepository;
+        this.orderingService = orderingService;
     }
 
     // =========================================================
@@ -340,12 +343,28 @@ public class WhatsAppWebhookService {
 
         try {
 
-            flowExecutionService.processIncomingMessage(
-                    organization.getId(),
-                    from,
-                    messageText,
-                    messageType
-            );
+            String flowInput = messageText;
+            if ("interactive".equalsIgnoreCase(messageType)) {
+                String replyId = whatsappMessage.path("interactive").path("button_reply").path("id").asText("");
+                if (replyId.isBlank()) {
+                    replyId = whatsappMessage.path("interactive").path("list_reply").path("id").asText("");
+                }
+                if (!replyId.isBlank()) {
+                    flowInput = replyId;
+                }
+            }
+
+            boolean handledByOrdering = orderingService.handle(
+                    organization.getId(), contact, conversation, from, flowInput);
+
+            if (!handledByOrdering) {
+                flowExecutionService.processIncomingMessage(
+                        organization.getId(),
+                        from,
+                        flowInput,
+                        messageType
+                );
+            }
 
         } catch (Exception exception) {
 

@@ -31,6 +31,7 @@ public class FlowExecutionService {
     private final ProductRepository productRepository;
     private final WhatsAppCloudApiService whatsAppCloudApiService;
     private final ObjectMapper objectMapper;
+    private final OrderingService orderingService;
 
     /**
      * Entry point for an incoming WhatsApp message.
@@ -58,6 +59,10 @@ public class FlowExecutionService {
         }
 
         // Route a customer's LIST selection before checking normal triggers.
+        if (routePendingInput(organizationId, customerPhoneNumber, messageText, messageType)) {
+            return;
+        }
+
         if (routeListSelection(
                 organizationId,
                 customerPhoneNumber,
@@ -468,11 +473,21 @@ public class FlowExecutionService {
                                 currentNode.getId()
                         );
 
-        if (currentNode.getNodeType() == FlowNode.NodeType.LIST
+        if ((currentNode.getNodeType() == FlowNode.NodeType.LIST
+                || currentNode.getNodeType() == FlowNode.NodeType.BUTTON)
                 && messageText != null
                 && !messageText.isBlank()) {
             outgoingEdges = outgoingEdges.stream()
                     .filter(edge -> messageText.equals(edge.getSourceHandle()))
+                    .toList();
+        }
+
+        if (currentNode.getNodeType() == FlowNode.NodeType.CONDITION) {
+            final String branch = evaluateCondition(
+                    currentNode, organizationId, customerPhoneNumber)
+                    ? "true" : "false";
+            outgoingEdges = outgoingEdges.stream()
+                    .filter(edge -> branch.equals(edge.getSourceHandle()))
                     .toList();
         }
 
@@ -503,7 +518,7 @@ public class FlowExecutionService {
             /*
              * Persist the pending LIST node for this organization/customer.
              */
-            if (nextNode.getNodeType() == FlowNode.NodeType.LIST) {
+            if (isWaitingNode(nextNode.getNodeType())) {
                 FlowExecutionSession session = flowExecutionSessionRepository
                         .findByOrganizationIdAndCustomerPhoneNumber(
                                 organizationId,
@@ -605,6 +620,21 @@ public class FlowExecutionService {
          *   ]
          * }
          */
+        if (node.getNodeType() == FlowNode.NodeType.BUTTON) {
+            sendButtonNode(node, organizationId, customerPhoneNumber);
+            return;
+        }
+
+        if (isInputNode(node.getNodeType())) {
+            askQuestion(node, organizationId, customerPhoneNumber);
+            return;
+        }
+
+        if (node.getNodeType() == FlowNode.NodeType.SET_VARIABLE) {
+            runSetVariable(flow, node, organizationId, customerPhoneNumber);
+            return;
+        }
+
         if (node.getNodeType() == FlowNode.NodeType.IMAGE) {
             sendImageNode(node, organizationId, customerPhoneNumber);
             return;
@@ -612,6 +642,11 @@ public class FlowExecutionService {
 
         if (node.getNodeType() == FlowNode.NodeType.LIST) {
             sendListMessage(node, organizationId, customerPhoneNumber);
+            return;
+        }
+
+        if (node.getNodeType() == FlowNode.NodeType.PRODUCT_MENU) {
+            orderingService.start(flow, node, organizationId, customerPhoneNumber);
             return;
         }
 
@@ -865,7 +900,7 @@ public class FlowExecutionService {
                 return;
             }
 
-            String text = textNode.asText();
+            String text = applyVariables(textNode.asText(), organizationId, customerPhoneNumber);
 
             if (text.isBlank()) {
                 return;
@@ -896,5 +931,298 @@ public class FlowExecutionService {
                             + exception.getMessage()
             );
         }
+    }
+
+    // =========================================================
+    // STAGE 1: buttons, inputs, variables, conditions
+    // =========================================================
+
+    private boolean isInputNode(FlowNode.NodeType type) {
+        return type == FlowNode.NodeType.TEXT_INPUT
+                || type == FlowNode.NodeType.PHONE_INPUT
+                || type == FlowNode.NodeType.EMAIL_INPUT
+                || type == FlowNode.NodeType.NUMBER_INPUT
+                || type == FlowNode.NodeType.DATE_INPUT;
+    }
+
+    private boolean isWaitingNode(FlowNode.NodeType type) {
+        return type == FlowNode.NodeType.LIST
+                || type == FlowNode.NodeType.BUTTON
+                || isInputNode(type);
+    }
+
+    private JsonNode configOf(FlowNode node) throws Exception {
+        return objectMapper.readTree(
+                node.getConfig() == null ? "{}" : node.getConfig());
+    }
+
+    private java.util.Map<String, String> readVariables(FlowExecutionSession session) {
+        try {
+            if (session != null
+                    && session.getVariablesJson() != null
+                    && !session.getVariablesJson().isBlank()) {
+                return objectMapper.readValue(
+                        session.getVariablesJson(),
+                        new com.fasterxml.jackson.core.type.TypeReference<java.util.LinkedHashMap<String, String>>() {
+                        });
+            }
+        } catch (Exception e) {
+            System.err.println("Bad variables json: " + e.getMessage());
+        }
+        return new java.util.LinkedHashMap<>();
+    }
+
+    private void putVariable(FlowExecutionSession session, String name, String value) {
+        if (name == null || name.isBlank()) {
+            return;
+        }
+        java.util.Map<String, String> vars = readVariables(session);
+        vars.put(name.trim(), value == null ? "" : value);
+        try {
+            session.setVariablesJson(objectMapper.writeValueAsString(vars));
+        } catch (Exception e) {
+            System.err.println("Could not save variable: " + e.getMessage());
+        }
+    }
+
+    private String applyVariables(String text, Long organizationId, String phone) {
+        if (text == null || !text.contains("{{")) {
+            return text;
+        }
+        FlowExecutionSession session = flowExecutionSessionRepository
+                .findByOrganizationIdAndCustomerPhoneNumber(organizationId, phone)
+                .orElse(null);
+        if (session == null) {
+            return text;
+        }
+        for (java.util.Map.Entry<String, String> e : readVariables(session).entrySet()) {
+            text = text.replace("{{" + e.getKey() + "}}", e.getValue());
+        }
+        return text;
+    }
+
+    private void sendButtonNode(FlowNode node, Long organizationId, String phone) {
+        try {
+            JsonNode config = configOf(node);
+            String text = applyVariables(
+                    config.path("text").asText("Choose an option"), organizationId, phone);
+
+            List<String[]> buttons = new ArrayList<>();
+            JsonNode array = config.path("buttons");
+            if (array.isArray()) {
+                for (JsonNode b : array) {
+                    String id = b.path("id").asText("");
+                    String title = b.path("text").asText("").trim();
+                    if (id.isBlank() || title.isBlank() || buttons.size() >= 3) {
+                        continue;
+                    }
+                    buttons.add(new String[]{id, title.length() > 20 ? title.substring(0, 20) : title});
+                }
+            }
+
+            if (buttons.isEmpty()) {
+                System.err.println("BUTTON node has no buttons. Node ID = " + node.getId());
+                return;
+            }
+
+            whatsAppCloudApiService.sendButtonsMessage(organizationId, phone, text, buttons);
+        } catch (Exception e) {
+            System.err.println("Flow BUTTON node failed: " + e.getMessage());
+        }
+    }
+
+    private void askQuestion(FlowNode node, Long organizationId, String phone) {
+        try {
+            JsonNode config = configOf(node);
+            String question = applyVariables(
+                    config.path("question").asText("Please reply"), organizationId, phone);
+            whatsAppCloudApiService.sendTextMessage(organizationId, phone, question);
+        } catch (Exception e) {
+            System.err.println("Flow INPUT node failed: " + e.getMessage());
+        }
+    }
+
+    private void runSetVariable(Flow flow, FlowNode node, Long organizationId, String phone) {
+        try {
+            JsonNode config = configOf(node);
+            String variable = config.path("variable").asText("");
+            String value = applyVariables(config.path("value").asText(""), organizationId, phone);
+
+            FlowExecutionSession session = flowExecutionSessionRepository
+                    .findByOrganizationIdAndCustomerPhoneNumber(organizationId, phone)
+                    .orElseGet(FlowExecutionSession::new);
+            session.setOrganizationId(organizationId);
+            session.setCustomerPhoneNumber(phone);
+            session.setFlowId(flow.getId());
+            putVariable(session, variable, value);
+            flowExecutionSessionRepository.save(session);
+        } catch (Exception e) {
+            System.err.println("Flow SET_VARIABLE failed: " + e.getMessage());
+        }
+    }
+
+    private boolean evaluateCondition(FlowNode node, Long organizationId, String phone) {
+        try {
+            JsonNode config = configOf(node);
+            String variable = config.path("variable").asText("");
+            String operator = config.path("operator").asText("equals");
+            String expected = applyVariables(
+                    config.path("value").asText(""), organizationId, phone).trim();
+
+            FlowExecutionSession session = flowExecutionSessionRepository
+                    .findByOrganizationIdAndCustomerPhoneNumber(organizationId, phone)
+                    .orElse(null);
+            String raw = session == null ? null : readVariables(session).get(variable);
+            boolean exists = raw != null && !raw.isBlank();
+            String actual = raw == null ? "" : raw.trim();
+
+            switch (operator) {
+                case "equals":
+                    return actual.equalsIgnoreCase(expected);
+                case "not_equals":
+                    return !actual.equalsIgnoreCase(expected);
+                case "contains":
+                    return actual.toLowerCase().contains(expected.toLowerCase());
+                case "not_contains":
+                    return !actual.toLowerCase().contains(expected.toLowerCase());
+                case "greater_than":
+                case "less_than":
+                    try {
+                        int c = new java.math.BigDecimal(actual)
+                                .compareTo(new java.math.BigDecimal(expected));
+                        return "greater_than".equals(operator) ? c > 0 : c < 0;
+                    } catch (Exception ex) {
+                        return false;
+                    }
+                case "exists":
+                    return exists;
+                case "not_exists":
+                    return !exists;
+                default:
+                    return false;
+            }
+        } catch (Exception e) {
+            System.err.println("Flow CONDITION failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private String validateInput(FlowNode.NodeType type, String answer) {
+        switch (type) {
+            case PHONE_INPUT: {
+                int digits = answer.replaceAll("[^0-9]", "").length();
+                return digits >= 10 && digits <= 15 ? null : "Please enter a valid phone number.";
+            }
+            case EMAIL_INPUT:
+                return answer.matches("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")
+                        ? null : "Please enter a valid email address.";
+            case NUMBER_INPUT:
+                try {
+                    new java.math.BigDecimal(answer);
+                    return null;
+                } catch (Exception e) {
+                    return "Please enter a number.";
+                }
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * Resumes a flow that is waiting for a BUTTON tap or an INPUT answer.
+     * LIST is handled by routeListSelection.
+     */
+    private boolean routePendingInput(
+            Long organizationId,
+            String phone,
+            String messageText,
+            String messageType
+    ) {
+        if (messageText == null || messageText.isBlank()) {
+            return false;
+        }
+
+        FlowExecutionSession session = flowExecutionSessionRepository
+                .findByOrganizationIdAndCustomerPhoneNumber(organizationId, phone)
+                .orElse(null);
+        if (session == null || session.getPendingNodeId() == null) {
+            return false;
+        }
+
+        Flow flow = findPublishedFlow(session.getFlowId(), organizationId);
+        FlowNode node = flow == null ? null : flowNodeRepository
+                .findByIdAndFlowId(session.getPendingNodeId(), flow.getId())
+                .orElse(null);
+
+        if (node == null) {
+            session.setPendingNodeId(null);
+            flowExecutionSessionRepository.save(session);
+            return false;
+        }
+
+        FlowNode.NodeType type = node.getNodeType();
+        boolean interactive = "interactive".equalsIgnoreCase(messageType);
+
+        if (type == FlowNode.NodeType.LIST) {
+            return false;
+        }
+
+        if (type == FlowNode.NodeType.BUTTON) {
+            if (!interactive) {
+                return false;
+            }
+            boolean edgeExists = flowEdgeRepository
+                    .findBySourceNodeId(node.getId())
+                    .stream()
+                    .anyMatch(edge -> messageText.equals(edge.getSourceHandle()));
+            if (!edgeExists) {
+                return true;
+            }
+            session.setPendingNodeId(null);
+            flowExecutionSessionRepository.save(session);
+            executeFromNode(flow, node, organizationId, phone,
+                    messageText, messageType, new HashSet<>());
+            return true;
+        }
+
+        if (!isInputNode(type)) {
+            session.setPendingNodeId(null);
+            flowExecutionSessionRepository.save(session);
+            return false;
+        }
+
+        if (interactive) {
+            return false;
+        }
+
+        String answer = messageText.trim();
+
+        if ("cancel".equalsIgnoreCase(answer)) {
+            session.setPendingNodeId(null);
+            flowExecutionSessionRepository.save(session);
+            whatsAppCloudApiService.sendTextMessage(organizationId, phone, "Cancelled.");
+            return true;
+        }
+
+        String error = validateInput(type, answer);
+        if (error != null) {
+            whatsAppCloudApiService.sendTextMessage(organizationId, phone, error);
+            askQuestion(node, organizationId, phone);
+            return true;
+        }
+
+        try {
+            String variable = configOf(node).path("variable").asText("");
+            putVariable(session, variable, answer);
+        } catch (Exception e) {
+            System.err.println("Could not read INPUT config: " + e.getMessage());
+        }
+
+        session.setPendingNodeId(null);
+        flowExecutionSessionRepository.save(session);
+
+        executeFromNode(flow, node, organizationId, phone,
+                messageText, messageType, new HashSet<>());
+        return true;
     }
 }

@@ -32,6 +32,7 @@ public class FlowExecutionService {
     private final WhatsAppCloudApiService whatsAppCloudApiService;
     private final ObjectMapper objectMapper;
     private final OrderingService orderingService;
+    private final SubscriptionFlowService subscriptionFlowService;
 
     /**
      * Entry point for an incoming WhatsApp message.
@@ -648,6 +649,16 @@ public class FlowExecutionService {
 
         if (node.getNodeType() == FlowNode.NodeType.PRODUCT_MENU) {
             orderingService.start(flow, node, organizationId, customerPhoneNumber);
+            return;
+        }
+
+        if (node.getNodeType() == FlowNode.NodeType.MY_ORDERS) {
+            orderingService.openAccount(flow, organizationId, customerPhoneNumber);
+            return;
+        }
+
+        if (node.getNodeType() == FlowNode.NodeType.SUBSCRIPTION) {
+            subscriptionFlowService.start(flow, node, organizationId, customerPhoneNumber);
             return;
         }
 

@@ -13,6 +13,8 @@ import com.sitegenius.whatsappbe.entity.OrderItem;
 import com.sitegenius.whatsappbe.entity.Product;
 import com.sitegenius.whatsappbe.entity.WhatsAppNumber;
 import com.sitegenius.whatsappbe.repository.FlowExecutionSessionRepository;
+import com.sitegenius.whatsappbe.repository.FlowNodeRepository;
+import com.sitegenius.whatsappbe.repository.FlowRepository;
 import com.sitegenius.whatsappbe.repository.OrderRepository;
 import com.sitegenius.whatsappbe.repository.ProductRepository;
 import com.sitegenius.whatsappbe.repository.WhatsAppNumberRepository;
@@ -26,6 +28,8 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClient;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -56,7 +60,10 @@ public class OrderingService {
     private final FlowExecutionSessionRepository sessionRepository;
     private final WhatsAppNumberRepository whatsAppNumberRepository;
     private final WhatsAppCloudApiService whatsAppCloudApiService;
+    private final FlowRepository flowRepository;
+    private final FlowNodeRepository flowNodeRepository;
     private final ObjectMapper objectMapper;
+    private final SubscriptionBenefitService subscriptionBenefitService;
 
     private final RestClient restClient = RestClient.builder().build();
 
@@ -137,6 +144,10 @@ public class OrderingService {
                 case "checkout" -> sendSummary(organizationId, phone, session, config);
                 case "confirm" -> confirmOrder(organizationId, contact, conversation, phone, session, config);
                 case "cancel" -> cancelOrder(organizationId, phone, session);
+                case "account" -> sendAccount(organizationId, phone, session, config);
+                case "cart" -> sendSummary(organizationId, phone, session, config);
+                case "order" -> sendOrderDetail(organizationId, phone, id, config);
+                case "cancelorder" -> cancelCustomerOrder(organizationId, phone, id, config);
                 default -> sendCategories(organizationId, phone, config);
             }
         } catch (Exception e) {
@@ -314,16 +325,28 @@ public class OrderingService {
             return;
         }
 
+        Map<Long, Integer> covered = coveredFor(orgId, phone, lines);
         StringBuilder text = new StringBuilder("Your order\n\n");
         BigDecimal total = BigDecimal.ZERO;
+        boolean anyCovered = false;
         for (Line line : lines) {
+            int c = covered.getOrDefault(line.product().getId(), 0);
+            BigDecimal payable = line.product().getPrice()
+                    .multiply(BigDecimal.valueOf(line.qty() - c));
             text.append(line.product().getName())
                     .append(" x ").append(line.qty())
-                    .append(" = ").append(money(line.product(), line.total()))
-                    .append("\n");
-            total = total.add(line.total());
+                    .append(" = ").append(money(line.product(), payable));
+            if (c > 0) {
+                anyCovered = true;
+                text.append(" (").append(c).append(" covered by plan)");
+            }
+            text.append("\n");
+            total = total.add(payable);
         }
-        text.append("\nTotal: ").append(money(lines.get(0).product(), total));
+        text.append("\nTotal to pay: ").append(money(lines.get(0).product(), total));
+        if (anyCovered) {
+            text.append("\n(Your subscription is applied)");
+        }
 
         List<String[]> buttons = List.of(
                 new String[]{PREFIX + "confirm", "Confirm order"},
@@ -365,9 +388,12 @@ public class OrderingService {
             return;
         }
 
+        Map<Long, Integer> covered = coveredFor(orgId, phone, lines);
         BigDecimal total = BigDecimal.ZERO;
         for (Line line : lines) {
-            total = total.add(line.total());
+            int c = covered.getOrDefault(line.product().getId(), 0);
+            total = total.add(line.product().getPrice()
+                    .multiply(BigDecimal.valueOf(line.qty() - c)));
         }
 
         String prefix = config.path("orderPrefix").asText("");
@@ -386,21 +412,36 @@ public class OrderingService {
                 .currency(lines.get(0).product().getCurrency())
                 .customerPhone(phone)
                 .customerName(contact.getName())
+                .lastNotifiedStatus(Order.OrderStatus.NEW)
                 .build();
 
         for (Line line : lines) {
             Product p = line.product();
-            order.addItem(OrderItem.builder()
-                    .productId(p.getId())
-                    .productName(p.getName())
-                    .sku(p.getSku())
-                    .unitPrice(p.getPrice())
-                    .quantity(line.qty())
-                    .currency(p.getCurrency())
-                    .build());
+            int c = covered.getOrDefault(p.getId(), 0);
+            if (c > 0) {
+                order.addItem(OrderItem.builder()
+                        .productId(p.getId())
+                        .productName(p.getName() + " (Plan)")
+                        .sku(p.getSku())
+                        .unitPrice(BigDecimal.ZERO)
+                        .quantity(c)
+                        .currency(p.getCurrency())
+                        .build());
+            }
+            if (line.qty() - c > 0) {
+                order.addItem(OrderItem.builder()
+                        .productId(p.getId())
+                        .productName(p.getName())
+                        .sku(p.getSku())
+                        .unitPrice(p.getPrice())
+                        .quantity(line.qty() - c)
+                        .currency(p.getCurrency())
+                        .build());
+            }
         }
 
-        orderRepository.save(order);
+        Order savedOrder = orderRepository.save(order);
+        subscriptionBenefitService.record(orgId, phone, savedOrder, covered);
 
         writeCart(session, new LinkedHashMap<>());
 
@@ -475,6 +516,15 @@ public class OrderingService {
             return null;
         }
         return p;
+    }
+
+    private Map<Long, Integer> coveredFor(Long orgId, String phone, List<Line> lines) {
+        List<SubscriptionBenefitService.CartItem> items = new ArrayList<>();
+        for (Line l : lines) {
+            items.add(new SubscriptionBenefitService.CartItem(
+                    l.product().getId(), catIdOf(l.product()), l.qty()));
+        }
+        return subscriptionBenefitService.covered(orgId, phone, items);
     }
 
     private List<Line> cartLines(Long orgId, Map<String, Integer> cart) {
@@ -589,7 +639,7 @@ public class OrderingService {
     // REPLY BUTTONS (max 3) with optional image header
     // =========================================================
 
-    private void sendButtons(
+    public void sendButtons(
             Long orgId,
             String phone,
             String body,
@@ -600,7 +650,9 @@ public class OrderingService {
                 .findFirstByOrganizationIdAndStatus(orgId, "ACTIVE")
                 .orElseThrow(() -> new RuntimeException("No active WhatsApp number found"));
 
-        boolean useHeader = headerImageUrl != null && headerImageUrl.startsWith("https://");
+        boolean useHeader = headerImageUrl != null
+                && headerImageUrl.startsWith("https://")
+                && headerImageUrl.toLowerCase().split("[?#]")[0].matches(".*\\.(jpe?g|png)$");
 
         try {
             postButtons(number, phone, body, useHeader ? headerImageUrl : null, buttons);
@@ -667,5 +719,294 @@ public class OrderingService {
                 .body(request)
                 .retrieve()
                 .body(String.class);
+    }
+
+    // =========================================================
+    // CART + ORDERS (customer view), CANCEL POLICY, STATUS UPDATES
+    // =========================================================
+
+    public void openAccount(Flow flow, Long organizationId, String phone) {
+        try {
+            FlowExecutionSession session = sessionRepository
+                    .findByOrganizationIdAndCustomerPhoneNumber(organizationId, phone)
+                    .orElseGet(FlowExecutionSession::new);
+
+            JsonNode config = orderingConfig(organizationId);
+
+            session.setOrganizationId(organizationId);
+            session.setCustomerPhoneNumber(phone);
+            session.setFlowId(flow.getId());
+            session.setPendingNodeId(null);
+            session.setStateJson(config.toString());
+            sessionRepository.save(session);
+
+            sendAccount(organizationId, phone, session, config);
+        } catch (Exception e) {
+            log.error("Open account failed: {}", e.getMessage());
+        }
+    }
+
+    /** Ordering settings live on the organization's published PRODUCT_MENU node. */
+    private JsonNode orderingConfig(Long orgId) {
+        List<Long> flowIds = flowRepository
+                .findByOrganizationIdAndStatus(orgId, Flow.FlowStatus.PUBLISHED)
+                .stream()
+                .map(Flow::getId)
+                .toList();
+
+        if (flowIds.isEmpty()) {
+            return objectMapper.createObjectNode();
+        }
+
+        List<FlowNode> nodes = flowNodeRepository.findByFlowIdInAndNodeTypeInOrderByIdAsc(
+                flowIds, List.of(FlowNode.NodeType.PRODUCT_MENU, FlowNode.NodeType.MY_ORDERS));
+
+        com.fasterxml.jackson.databind.node.ObjectNode merged = objectMapper.createObjectNode();
+        boolean menuLoaded = false;
+
+        // 1) base settings from the Product Menu node
+        for (FlowNode node : nodes) {
+            if (menuLoaded || node.getNodeType() != FlowNode.NodeType.PRODUCT_MENU) {
+                continue;
+            }
+            try {
+                JsonNode menu = objectMapper.readTree(node.getConfig());
+                if (menu != null && menu.isObject()) {
+                    merged.setAll((com.fasterxml.jackson.databind.node.ObjectNode) menu);
+                    menuLoaded = true;
+                }
+            } catch (Exception ignored) {
+                // try the next node
+            }
+        }
+
+        // 2) cancel / status settings from the Cart and Orders node override
+        for (FlowNode node : nodes) {
+            if (node.getNodeType() != FlowNode.NodeType.MY_ORDERS) {
+                continue;
+            }
+            try {
+                JsonNode mine = objectMapper.readTree(node.getConfig());
+                if (mine == null || !mine.isObject()) {
+                    continue;
+                }
+                mine.fields().forEachRemaining(entry -> {
+                    JsonNode value = entry.getValue();
+                    boolean blankText = value.isTextual() && value.asText().isBlank();
+                    if (!"buttons".equals(entry.getKey()) && !value.isNull() && !blankText) {
+                        merged.set(entry.getKey(), value);
+                    }
+                });
+                break;
+            } catch (Exception ignored) {
+                // try the next node
+            }
+        }
+        return merged;
+    }
+
+    private void sendAccount(Long orgId, String phone, FlowExecutionSession session, JsonNode config) {
+        List<Line> lines = cartLines(orgId, readCart(session));
+        List<Order> orders = orderRepository
+                .findTop10ByOrganizationIdAndCustomerPhoneOrderByCreatedAtDesc(orgId, phone);
+
+        List<Map<String, String>> rows = new ArrayList<>();
+
+        if (!lines.isEmpty()) {
+            int items = 0;
+            BigDecimal total = BigDecimal.ZERO;
+            for (Line line : lines) {
+                items += line.qty();
+                total = total.add(line.total());
+            }
+            Map<String, String> row = new HashMap<>();
+            row.put("id", PREFIX + "cart");
+            row.put("title", cut("Your cart (" + items + ")", 24));
+            row.put("description", cut(money(lines.get(0).product(), total) + " | tap to review", 72));
+            rows.add(row);
+        }
+
+        for (Order order : orders) {
+            if (rows.size() >= ROW_LIMIT) {
+                break;
+            }
+            Map<String, String> row = new HashMap<>();
+            row.put("id", PREFIX + "order:" + order.getId());
+            row.put("title", cut(order.getOrderNumber(), 24));
+            row.put("description", cut(statusLabel(order.getStatus()) + " | " + orderMoney(order), 72));
+            rows.add(row);
+        }
+
+        if (rows.isEmpty()) {
+            whatsAppCloudApiService.sendTextMessage(orgId, phone,
+                    "You have no cart or orders yet. Send hi to see the menu.");
+            return;
+        }
+
+        whatsAppCloudApiService.sendListMessage(
+                orgId, phone, "Your cart and orders", "View", "Cart and orders", rows);
+    }
+
+    private void sendOrderDetail(Long orgId, String phone, Long orderId, JsonNode config) {
+        Order order = ownOrder(orgId, phone, orderId);
+        if (order == null) {
+            whatsAppCloudApiService.sendTextMessage(orgId, phone, "Order not found.");
+            return;
+        }
+
+        StringBuilder text = new StringBuilder();
+        text.append("Order ").append(order.getOrderNumber()).append("\n");
+        text.append("Status: ").append(statusLabel(order.getStatus())).append("\n\n");
+        for (OrderItem item : order.getItems()) {
+            text.append(item.getProductName()).append(" x ").append(item.getQuantity()).append("\n");
+        }
+        text.append("\nTotal: ").append(orderMoney(order));
+
+        String denied = cancelDenied(order, config);
+        boolean finished = order.getStatus() == Order.OrderStatus.DELIVERED
+                || order.getStatus() == Order.OrderStatus.CANCELLED;
+
+        if (denied != null && !finished) {
+            text.append("\n\n").append(denied);
+        }
+
+        List<String[]> buttons = new ArrayList<>();
+        if (denied == null) {
+            buttons.add(new String[]{PREFIX + "cancelorder:" + order.getId(), "Cancel order"});
+        }
+        buttons.add(new String[]{PREFIX + "account", "My orders"});
+        buttons.add(new String[]{PREFIX + "menu", "Menu"});
+
+        sendButtons(orgId, phone, text.toString(), null, buttons);
+    }
+
+    private void cancelCustomerOrder(Long orgId, String phone, Long orderId, JsonNode config) {
+        Order order = ownOrder(orgId, phone, orderId);
+        if (order == null) {
+            whatsAppCloudApiService.sendTextMessage(orgId, phone, "Order not found.");
+            return;
+        }
+
+        String denied = cancelDenied(order, config);
+        if (denied != null) {
+            whatsAppCloudApiService.sendTextMessage(orgId, phone, denied);
+            return;
+        }
+
+        order.setStatus(Order.OrderStatus.CANCELLED);
+        order.setLastNotifiedStatus(Order.OrderStatus.CANCELLED);
+        orderRepository.save(order);
+
+        whatsAppCloudApiService.sendTextMessage(orgId, phone,
+                "Order " + order.getOrderNumber() + " has been cancelled. Send hi for the menu.");
+
+        sendToStaff(orgId, config,
+                "Order " + order.getOrderNumber() + " was cancelled by the customer " + phone + ".");
+    }
+
+    /** Returns null when the customer may cancel, otherwise the message to show. */
+    private String cancelDenied(Order order, JsonNode ignoredConfig) {
+        JsonNode config = orderingConfig(order.getOrganizationId());
+        String denied = config.path("cancelDeniedMessage").asText("");
+        if (denied.isBlank()) {
+            denied = "This order can no longer be cancelled. Please contact us.";
+        }
+
+        Order.OrderStatus status = order.getStatus();
+        boolean open = status == Order.OrderStatus.NEW || status == Order.OrderStatus.CONFIRMED;
+        String mode = config.path("cancelMode").asText("UNTIL_ACCEPTED");
+
+        if ("NEVER".equals(mode)) {
+            return denied;
+        }
+
+        if ("UNTIL_PREPARING".equals(mode)) {
+            return open ? null : denied;
+        }
+
+        if ("WITHIN_MINUTES".equals(mode)) {
+            if (!open || order.getCreatedAt() == null) {
+                return denied;
+            }
+            long minutes = Duration.between(order.getCreatedAt(), LocalDateTime.now()).toMinutes();
+            return minutes < config.path("cancelMinutes").asInt(5) ? null : denied;
+        }
+
+        // default UNTIL_ACCEPTED: only while the business has not accepted it yet
+        return status == Order.OrderStatus.NEW ? null : denied;
+    }
+
+    private Order ownOrder(Long orgId, String phone, Long orderId) {
+        if (orderId == null) {
+            return null;
+        }
+        return orderRepository.findById(orderId)
+                .filter(o -> orgId.equals(o.getOrganizationId()) && phone.equals(o.getCustomerPhone()))
+                .orElse(null);
+    }
+
+    private void sendToStaff(Long orgId, JsonNode config, String text) {
+        String staff = config.path("staffNotifyNumber").asText("").replaceAll("[^0-9]", "");
+        if (staff.isBlank()) {
+            return;
+        }
+        try {
+            whatsAppCloudApiService.sendTextMessage(orgId, staff, text);
+        } catch (Exception e) {
+            log.warn("Staff notification failed: {}", e.getMessage());
+        }
+    }
+
+    /** Called by the status notifier when an order's status changed. */
+    public void notifyStatusChange(Order order) {
+        try {
+            if (order.getStatus() == null || order.getCustomerPhone() == null) {
+                return;
+            }
+            JsonNode config = orderingConfig(order.getOrganizationId());
+            String custom = config.path("statusMessages").path(order.getStatus().name()).asText("");
+            String text = custom.isBlank()
+                    ? defaultStatusText(order)
+                    : custom.replace("{order}", String.valueOf(order.getOrderNumber()));
+
+            whatsAppCloudApiService.sendTextMessage(
+                    order.getOrganizationId(), order.getCustomerPhone(), text);
+        } catch (Exception e) {
+            log.warn("Status notification failed for order {}: {}", order.getId(), e.getMessage());
+        }
+    }
+
+    private String defaultStatusText(Order order) {
+        String n = String.valueOf(order.getOrderNumber());
+        return switch (order.getStatus()) {
+            case NEW -> "We received your order " + n + ".";
+            case CONFIRMED -> "Good news! Your order " + n + " has been accepted.";
+            case PROCESSING -> "Your order " + n + " is being prepared.";
+            case READY -> "Your order " + n + " is ready for pickup.";
+            case OUT_FOR_DELIVERY -> "Your order " + n + " is out for delivery.";
+            case DELIVERED -> "Your order " + n + " is delivered. Thank you!";
+            case CANCELLED -> "Your order " + n + " has been cancelled.";
+        };
+    }
+
+    private String statusLabel(Order.OrderStatus status) {
+        if (status == null) {
+            return "Unknown";
+        }
+        return switch (status) {
+            case NEW -> "Placed";
+            case CONFIRMED -> "Accepted";
+            case PROCESSING -> "Preparing";
+            case READY -> "Ready";
+            case OUT_FOR_DELIVERY -> "Out for delivery";
+            case DELIVERED -> "Delivered";
+            case CANCELLED -> "Cancelled";
+        };
+    }
+
+    private String orderMoney(Order order) {
+        String currency = order.getCurrency() == null ? "INR" : order.getCurrency();
+        String label = "INR".equalsIgnoreCase(currency) ? "Rs " : currency + " ";
+        return label + order.getTotalAmount().stripTrailingZeros().toPlainString();
     }
 }

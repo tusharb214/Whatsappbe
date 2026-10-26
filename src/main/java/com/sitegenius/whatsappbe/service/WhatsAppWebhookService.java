@@ -27,6 +27,7 @@ public class WhatsAppWebhookService {
     private final FlowExecutionService flowExecutionService;
     private final MessageRepository messageRepository;
     private final OrderingService orderingService;
+    private final SubscriptionFlowService subscriptionFlowService;
 
     public WhatsAppWebhookService(
             ObjectMapper objectMapper,
@@ -35,7 +36,8 @@ public class WhatsAppWebhookService {
             ConversationRepository conversationRepository,
             FlowExecutionService flowExecutionService,
             MessageRepository messageRepository,
-            OrderingService orderingService) {
+            OrderingService orderingService,
+            SubscriptionFlowService subscriptionFlowService) {
 
         this.objectMapper = objectMapper;
         this.whatsAppNumberRepository = whatsAppNumberRepository;
@@ -44,6 +46,7 @@ public class WhatsAppWebhookService {
         this.flowExecutionService = flowExecutionService;
         this.messageRepository = messageRepository;
         this.orderingService = orderingService;
+        this.subscriptionFlowService = subscriptionFlowService;
     }
 
     // =========================================================
@@ -356,6 +359,11 @@ public class WhatsAppWebhookService {
 
             boolean handledByOrdering = orderingService.handle(
                     organization.getId(), contact, conversation, from, flowInput);
+
+            if (!handledByOrdering) {
+                handledByOrdering = subscriptionFlowService.handle(
+                        organization.getId(), from, flowInput);
+            }
 
             if (!handledByOrdering) {
                 flowExecutionService.processIncomingMessage(

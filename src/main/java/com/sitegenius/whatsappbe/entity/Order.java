@@ -73,6 +73,10 @@ public class Order {
 
     private String whatsappOrderId;
 
+    @Enumerated(EnumType.STRING)
+    @Column(length = 30)
+    private OrderStatus lastNotifiedStatus;
+
     @OneToMany(
             mappedBy = "order",
             cascade = CascadeType.ALL,

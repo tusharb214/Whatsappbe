@@ -88,6 +88,8 @@ public class FlowNode {
         PRODUCT,
         PRODUCT_LIST,
         PRODUCT_MENU,
+        MY_ORDERS,
+        SUBSCRIPTION,
         CATALOG,
 
         LOCATION,

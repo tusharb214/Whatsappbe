@@ -60,6 +60,7 @@ public class OrderingService {
     private final FlowExecutionSessionRepository sessionRepository;
     private final WhatsAppNumberRepository whatsAppNumberRepository;
     private final WhatsAppCloudApiService whatsAppCloudApiService;
+    private final OrderPaymentService paymentService;
     private final FlowRepository flowRepository;
     private final FlowNodeRepository flowNodeRepository;
     private final ObjectMapper objectMapper;
@@ -144,6 +145,8 @@ public class OrderingService {
                 case "checkout" -> sendSummary(organizationId, phone, session, config);
                 case "confirm" -> confirmOrder(organizationId, contact, conversation, phone, session, config);
                 case "cancel" -> cancelOrder(organizationId, phone, session);
+                case "payonline" -> paymentService.payOnline(organizationId, phone, id);
+                case "paycash" -> paymentService.payCash(organizationId, phone, id);
                 case "account" -> sendAccount(organizationId, phone, session, config);
                 case "cart" -> sendSummary(organizationId, phone, session, config);
                 case "order" -> sendOrderDetail(organizationId, phone, id, config);
@@ -444,6 +447,11 @@ public class OrderingService {
         subscriptionBenefitService.record(orgId, phone, savedOrder, covered);
 
         writeCart(session, new LinkedHashMap<>());
+
+        if ("ONLINE_AND_CASH".equals(config.path("paymentMode").asText("CASH_ONLY"))
+                && paymentService.offerChoice(orgId, phone, order)) {
+            return;
+        }
 
         whatsAppCloudApiService.sendTextMessage(orgId, phone,
                 "Order confirmed. Order no: " + orderNumber

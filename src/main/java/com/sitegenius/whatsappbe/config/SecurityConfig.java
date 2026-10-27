@@ -72,7 +72,8 @@ public class SecurityConfig {
                         ).permitAll()
 
                         .requestMatchers(
-                                "/api/webhook/whatsapp"
+                                "/api/webhook/whatsapp",
+                                "/api/webhook/razorpay/**"
                         ).permitAll()
 
 

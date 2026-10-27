@@ -73,6 +73,9 @@ public class Order {
 
     private String whatsappOrderId;
 
+    @Column(length = 20)
+    private String paymentMethod;
+
     @Enumerated(EnumType.STRING)
     @Column(length = 30)
     private OrderStatus lastNotifiedStatus;

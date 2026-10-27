@@ -163,6 +163,22 @@ public class OrderController {
         );
     }
 
+    @PostMapping("/{id}/cash-received")
+    public ResponseEntity<Order> cashReceived(
+            @PathVariable Long id,
+            Authentication authentication
+    ) {
+        Long organizationId = getOrganizationId(authentication);
+        return ResponseEntity.ok(
+                orderService.updatePaymentStatus(
+                        organizationId,
+                        id,
+                        Order.PaymentStatus.PAID,
+                        null
+                )
+        );
+    }
+
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteOrder(
             @PathVariable Long id,

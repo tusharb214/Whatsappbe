@@ -18,6 +18,7 @@ public class OrderService {
 
     private final OrderRepository orderRepository;
     private final OrderItemRepository orderItemRepository;
+    private final WhatsAppCloudApiService whatsAppCloudApiService;
 
     public List<Order> getAllOrders(Long organizationId) {
         return orderRepository
@@ -182,13 +183,33 @@ public class OrderService {
 
         Order order = getOrderById(organizationId, orderId);
 
+        boolean becamePaid = paymentStatus == Order.PaymentStatus.PAID
+                && order.getPaymentStatus() != Order.PaymentStatus.PAID;
+
         order.setPaymentStatus(paymentStatus);
 
         if (paymentId != null && !paymentId.isBlank()) {
             order.setPaymentId(paymentId);
         }
 
-        return orderRepository.save(order);
+        Order saved = orderRepository.save(order);
+
+        if (becamePaid && saved.getCustomerPhone() != null && !saved.getCustomerPhone().isBlank()) {
+            try {
+                String currency = saved.getCurrency() == null ? "INR" : saved.getCurrency();
+                String label = "INR".equalsIgnoreCase(currency) ? "Rs " : currency + " ";
+                whatsAppCloudApiService.sendTextMessage(
+                        organizationId,
+                        saved.getCustomerPhone(),
+                        "Payment received for order " + saved.getOrderNumber() + ". Thank you!\n"
+                                + "Total paid: " + label
+                                + saved.getTotalAmount().stripTrailingZeros().toPlainString());
+            } catch (Exception e) {
+                // payment is already saved; WhatsApp may reject free text outside the 24h window
+            }
+        }
+
+        return saved;
     }
 
     public void deleteOrder(Long organizationId, Long orderId) {
